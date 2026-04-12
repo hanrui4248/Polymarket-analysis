@@ -64,6 +64,25 @@ python closed_position_searcher.py
 - 脚本使用 Polymarket **Data API / Gamma API / CLOB** 等公开端点；`activity` 等接口存在 **offset 上限**（代码中约 5000 以内），深度历史可能无法一次拉全，可通过 `START_DATE` 缩小时间范围。
 - 请求频率过高可能触发限速；`position_deep_fetcher.py`、`closed_position_searcher.py` 中已加入间隔与重试，仍建议勿并发猛刷。
 
+## 发布到 GitHub
+
+本地已可使用 Git 管理；首次推送到远程示例：
+
+1. 在 [GitHub 新建仓库](https://github.com/new)（可命名为 `polymarket-analysis` 等，**不要**勾选初始化 README）。
+2. 在项目目录执行（将 `YOUR_USER` 与仓库名换成你的）：
+
+```bash
+git remote add origin https://github.com/YOUR_USER/polymarket-analysis.git
+git push -u origin main
+```
+
+若已安装 [GitHub CLI](https://cli.github.com/)，可在项目根目录执行：
+
+```bash
+gh auth login
+gh repo create polymarket-analysis --public --source=. --remote=origin --push
+```
+
 ## 免责声明
 
 本仓库仅用于技术学习与数据分析。预测市场存在损失风险，作者不对任何使用本工具产生的后果负责。
