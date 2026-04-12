@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 脚本生成的输出（按需取消注释以纳入版本库）
+position_analysis_*.json
+closed_positions_*.json
+market_activity_*
+
+# 本地调试、临时文件
+*.log
+*.tmp
+.cache/
