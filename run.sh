@@ -8,8 +8,8 @@
 #   ./run.sh "市场名称" 0xABC...      ← 覆盖持仓名称 + 钱包地址
 
 # ──────────────── 默认配置（按需修改） ────────────────
-WALLET="0xdf0d2ccfe3d7c2ef120395534e43afe283509f79"
-POSITION="Dogecoin Up or Down - April 8, 9:20PM-9:25PM ET"
+WALLET="0x2005d16a84ceefa912d4e380cd32e7ff827875ea"
+POSITION="Barcelona Open: Nuno Borges vs Adrian Mannarino"
 START_DATE=""
 OUTPUT=""  # 留空则自动生成文件名
 # ──────────────────────────────────────────────────────

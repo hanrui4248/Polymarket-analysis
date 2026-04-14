@@ -346,7 +346,7 @@ def fetch_wallet_trades(
     start_ts: Optional[int] = None,
 ) -> list[dict]:
     """
-    分页拉取钱包的 TRADE / REDEEM 记录。
+    分页拉取钱包的 TRADE / REDEEM / MERGE / SPLIT 记录。
     - 如果有 conditionId 列表，逐个精确拉取。
     - 否则拉取全量。
     """
@@ -357,7 +357,7 @@ def fetch_wallet_trades(
     targets: list[Optional[str]] = condition_ids if condition_ids else [None]
 
     for cid in targets:
-        for act_type in ("TRADE", "REDEEM"):
+        for act_type in ("TRADE", "REDEEM", "MERGE", "SPLIT"):
             label = f"{act_type}"
             if cid:
                 label += f" (cid={cid[:16]}…)"
@@ -435,9 +435,13 @@ def filter_position_trades(
     records: list[dict],
     position_name: str,
     condition_ids: list[str],
+    tokens_map: dict[str, list[dict]] | None = None,
 ) -> dict[str, list[dict]]:
     """
     过滤记录并按 (conditionId, outcome) 分组，每组代表一个独立持仓。
+
+    通过 asset(token_id) → outcome 映射精确归属 REDEEM 记录，
+    避免缺失 outcome 的 REDEEM 被错分到另一侧。
     """
     print(f"[3/6] 过滤并分组持仓...")
 
@@ -452,7 +456,6 @@ def filter_position_trades(
         print(f"  标题模糊匹配: {len(records)} → {len(filtered)}")
 
     if not filtered:
-        # 调试：展示拉取到的部分标题
         titles = sorted({r.get("title", "") for r in records if r.get("title")})
         if titles:
             print("  ⚠ 未匹配任何记录。已拉取的部分市场标题：")
@@ -460,31 +463,172 @@ def filter_position_trades(
                 print(f"    · {t}")
         return {}
 
-    # 先按 conditionId 聚合，再处理 outcome 为空的情况（REDEEM 经常缺 outcome）
-    by_cid: dict[str, list[dict]] = {}
+    # ── 构建 asset(token_id) → outcome 映射 ──────────────────────────
+    # 优先级：tokens_map (Gamma API 权威数据) → TRADE 记录 (实际交易)
+    asset_to_outcome: dict[str, str] = {}
+    if tokens_map:
+        for _cid, tokens in tokens_map.items():
+            for tk in tokens:
+                if isinstance(tk, dict):
+                    tid = tk.get("token_id", "")
+                    oc = tk.get("outcome", "")
+                    if tid and oc:
+                        asset_to_outcome[tid] = oc
     for r in filtered:
+        asset = r.get("asset", "")
+        outcome = r.get("outcome", "")
+        if asset and outcome:
+            asset_to_outcome[asset] = outcome
+
+    if asset_to_outcome:
+        print(f"  asset→outcome 映射: {len(asset_to_outcome)} 条")
+        for tid, oc in asset_to_outcome.items():
+            print(f"    {tid[:30]}… → {oc}")
+
+    def _resolve_outcome(r: dict) -> str:
+        """获取记录的有效 outcome：先看原始字段，再查 asset 映射"""
+        o = r.get("outcome", "")
+        if not o:
+            o = asset_to_outcome.get(r.get("asset", ""), "")
+        return o
+
+    # ── 分类记录 ───────────────────────────────────────────────────────
+    # 1. MERGE/SPLIT: CTF 双边操作，等量消耗/创建每侧代币，USDC 平分
+    # 2. REDEEM 无 outcome/asset: CTF redeemPositions 整市场结算，
+    #    USDC 按各侧剩余持仓比例分配（赢方得 $1/份，输方得 $0）
+    # 3. 普通记录: TRADE 或有明确归属的 REDEEM
+    _BILATERAL_TYPES = {"MERGE", "SPLIT"}
+    normal_records: list[dict] = []
+    bilateral_records: list[dict] = []
+    orphan_redeems: list[dict] = []
+
+    for r in filtered:
+        rec_type = r.get("type", "")
+        if rec_type in _BILATERAL_TYPES:
+            bilateral_records.append(r)
+        elif rec_type == "REDEEM" and not _resolve_outcome(r):
+            orphan_redeems.append(r)
+        else:
+            normal_records.append(r)
+
+    if bilateral_records:
+        print(f"  MERGE/SPLIT 记录: {len(bilateral_records)} 条")
+    if orphan_redeems:
+        print(f"  待归属 REDEEM 记录: {len(orphan_redeems)} 条")
+
+    # ── 按 conditionId 聚合普通记录 ──────────────────────────────────
+    by_cid: dict[str, list[dict]] = {}
+    for r in normal_records:
         cid = r.get("conditionId", "unknown")
         by_cid.setdefault(cid, []).append(r)
 
     groups: dict[str, list[dict]] = {}
     for cid, cid_records in by_cid.items():
-        # 收集该 conditionId 下所有非空 outcome
         known_outcomes = {
-            r.get("outcome") for r in cid_records if r.get("outcome")
+            _resolve_outcome(r) for r in cid_records if _resolve_outcome(r)
         }
         if len(known_outcomes) <= 1:
-            # 只有一个 outcome（或全部为空），合并为一组
             outcome = known_outcomes.pop() if known_outcomes else "unknown"
             groups[f"{cid}|{outcome}"] = cid_records
         else:
-            # 多个 outcome，按 outcome 拆分；空 outcome 归入最多的那组
             primary = max(
                 known_outcomes,
-                key=lambda o: sum(1 for r in cid_records if r.get("outcome") == o),
+                key=lambda o: sum(
+                    1 for r in cid_records if _resolve_outcome(r) == o
+                ),
             )
+            resolved_count = 0
+            fallback_count = 0
             for r in cid_records:
-                o = r.get("outcome") or primary
+                o = _resolve_outcome(r)
+                if not o:
+                    o = primary
+                    fallback_count += 1
+                elif not r.get("outcome"):
+                    resolved_count += 1
                 groups.setdefault(f"{cid}|{o}", []).append(r)
+            if resolved_count:
+                print(f"  ✓ 通过 asset 映射修正了 {resolved_count} 条缺失 outcome 的记录")
+            if fallback_count:
+                print(f"  ⚠ {fallback_count} 条记录无法确定 outcome，回退到 primary={primary}")
+
+    # ── 将 MERGE/SPLIT 复制到同 conditionId 的每个 outcome 组 ────────
+    # MERGE 消耗等量的每侧代币返还 USDC, SPLIT 反之。
+    # 每侧的 USDC 份额 = 总 usdcSize / outcome 数。
+    for r in bilateral_records:
+        cid = r.get("conditionId", "unknown")
+        matching_keys = [k for k in groups if k.startswith(f"{cid}|")]
+        num_outcomes = max(1, len(matching_keys))
+
+        if not matching_keys:
+            outcome = _resolve_outcome(r) or "unknown"
+            matching_keys = [f"{cid}|{outcome}"]
+
+        usdc_per_side = safe_float(r.get("usdcSize")) / num_outcomes
+        for gkey in matching_keys:
+            entry = dict(r)
+            entry["_usdc_per_side"] = usdc_per_side
+            groups.setdefault(gkey, []).append(entry)
+
+        rec_type = r.get("type", "")
+        print(f"  ✓ {rec_type} {safe_float(r.get('size')):.2f} 份"
+              f" (${safe_float(r.get('usdcSize')):.2f}) → 分配到 {num_outcomes} 个 outcome"
+              f" (每侧 ${usdc_per_side:.2f})")
+
+    # ── 按剩余持仓比例分配无归属的 REDEEM ────────────────────────────
+    # CTF 的 redeemPositions 是整市场结算，赢方 $1/份、输方 $0/份。
+    # 通过各侧已知的 买入-卖出-合并 计算剩余持仓，按比例分配 USDC。
+    for r in orphan_redeems:
+        cid = r.get("conditionId", "unknown")
+        matching_keys = [k for k in groups if k.startswith(f"{cid}|")]
+
+        if len(matching_keys) <= 1:
+            target = matching_keys[0] if matching_keys else f"{cid}|unknown"
+            groups.setdefault(target, []).append(r)
+            continue
+
+        remaining_per_group: dict[str, float] = {}
+        for gkey in matching_keys:
+            remaining = 0.0
+            for rec in groups[gkey]:
+                rtype = rec.get("type", "TRADE")
+                rside = rec.get("side", "")
+                rsize = safe_float(rec.get("size"))
+                if (rtype == "TRADE" and rside == "BUY") or rtype == "SPLIT":
+                    remaining += rsize
+                elif (rtype == "TRADE" and rside == "SELL") or rtype == "MERGE":
+                    remaining -= rsize
+            remaining_per_group[gkey] = max(0.0, remaining)
+
+        total_remaining = sum(remaining_per_group.values())
+        total_usdc = safe_float(r.get("usdcSize"))
+        total_size = safe_float(r.get("size"))
+
+        if total_remaining < 1e-6:
+            largest = max(matching_keys, key=lambda k: len(groups[k]))
+            groups[largest].append(r)
+            print(f"  ⚠ REDEEM ${total_usdc:.2f} 无法按持仓分配，回退到最大组")
+        else:
+            attributed = 0
+            for gkey in matching_keys:
+                ratio = remaining_per_group[gkey] / total_remaining
+                if ratio < 1e-6:
+                    continue
+                entry = dict(r)
+                entry["size"] = total_size * ratio
+                entry["usdcSize"] = total_usdc * ratio
+                entry["_usdc_per_side"] = total_usdc * ratio
+                groups[gkey].append(entry)
+                attributed += 1
+                _, oname = gkey.split("|", 1)
+                print(f"    {oname}: 剩余 {remaining_per_group[gkey]:.2f} 份"
+                      f" → 分得 REDEEM {total_size * ratio:.2f} 份"
+                      f" (${total_usdc * ratio:.2f})")
+            print(f"  ✓ REDEEM ${total_usdc:.2f} 按持仓比例分配到 {attributed} 个 outcome")
+
+    # 每组按时间排序
+    for trades in groups.values():
+        trades.sort(key=lambda x: (x.get("timestamp", 0), x.get("type", "")))
 
     print(f"  发现 {len(groups)} 个持仓分组：")
     for key, trades in groups.items():
@@ -492,8 +636,15 @@ def filter_position_trades(
         nb = sum(1 for t in trades if t.get("side") == "BUY")
         ns = sum(1 for t in trades if t.get("side") == "SELL")
         nr = sum(1 for t in trades if t.get("type") == "REDEEM")
+        nm = sum(1 for t in trades if t.get("type") == "MERGE")
+        nsp = sum(1 for t in trades if t.get("type") == "SPLIT")
         title = trades[0].get("title", "")[:50]
-        print(f"    [{outcome_part}] {len(trades)} 条 (买{nb}/卖{ns}/赎回{nr})  {title}")
+        counts = f"买{nb}/卖{ns}/赎回{nr}"
+        if nm:
+            counts += f"/合并{nm}"
+        if nsp:
+            counts += f"/拆分{nsp}"
+        print(f"    [{outcome_part}] {len(trades)} 条 ({counts})  {title}")
     return groups
 
 
@@ -570,12 +721,32 @@ def build_trade_details(
             position_shares = max(0.0, position_shares - shares)
             cumulative_pnl += realized_pnl
 
+        # ── SPLIT (拆分 USDC → 各侧代币，等同于 BUY) ────────────────
+        elif rec_type == "SPLIT":
+            split_cost = safe_float(raw.get("_usdc_per_side", usdc))
+            eff_price = (split_cost / shares) if shares > 1e-12 else price
+            fifo_lots.append({"shares": shares, "price": eff_price})
+            position_shares += shares
+            usdc = split_cost
+            side = "SPLIT"
+
+        # ── MERGE (合并各侧代币 → USDC，等同于 SELL) ────────────────
+        elif rec_type == "MERGE":
+            merge_proceeds = safe_float(raw.get("_usdc_per_side", usdc))
+            realized_pnl = _fifo_match(fifo_lots, shares, merge_proceeds)
+            position_shares = max(0.0, position_shares - shares)
+            cumulative_pnl += realized_pnl
+            usdc = merge_proceeds
+            side = "MERGE"
+
         # ── REDEEM ───────────────────────────────────────────────────
         elif rec_type == "REDEEM":
             redeemed = shares if shares > 1e-12 else position_shares
-            realized_pnl = _fifo_match(fifo_lots, redeemed, usdc)
+            redeem_usdc = safe_float(raw.get("_usdc_per_side", usdc))
+            realized_pnl = _fifo_match(fifo_lots, redeemed, redeem_usdc)
             position_shares = max(0.0, position_shares - redeemed)
             cumulative_pnl += realized_pnl
+            usdc = redeem_usdc
             side = "REDEEM"
 
         # ── 衍生指标 ─────────────────────────────────────────────────
@@ -587,16 +758,19 @@ def build_trade_details(
         if position_shares > 1e-12:
             avg_entry = cur_capital / position_shares
 
-        is_buy = (side == "BUY")
-        prior_buys = any(d["action_type"] == "buy" for d in details)
-        is_opening = is_buy and not prior_buys
-        is_add = is_buy and prior_buys
-        is_reduce = side == "SELL" and position_shares > 1e-3
-        is_close = side in ("SELL", "REDEEM") and position_shares < 1e-3
+        is_entry = side in ("BUY", "SPLIT")
+        prior_entries = any(
+            d["action_type"] in ("buy", "split") for d in details
+        )
+        is_opening = is_entry and not prior_entries
+        is_add = is_entry and prior_entries
+        is_exit = side in ("SELL", "MERGE", "REDEEM")
+        is_reduce = is_exit and position_shares > 1e-3
+        is_close = is_exit and position_shares < 1e-3
 
-        if rec_type == "REDEEM":
-            action_type = "redeem"
-            trade_side_label = f"Redeem {outcome}"
+        if rec_type in ("REDEEM", "MERGE", "SPLIT"):
+            action_type = rec_type.lower()
+            trade_side_label = f"{rec_type.capitalize()} {outcome}"
         else:
             action_type = side.lower() if side else "unknown"
             trade_side_label = f"{side.capitalize()} {outcome}" if side else outcome
@@ -659,50 +833,57 @@ def build_position_summary(
     buys = [t for t in trade_details if t["action_type"] == "buy"]
     sells = [t for t in trade_details if t["action_type"] == "sell"]
     redeems = [t for t in trade_details if t["action_type"] == "redeem"]
-    exits = sells + redeems
+    merges = [t for t in trade_details if t["action_type"] == "merge"]
+    splits = [t for t in trade_details if t["action_type"] == "split"]
+    entries = buys + splits
+    exits = sells + redeems + merges
 
     total_bought = sum(t["shares"] for t in buys)
     total_sold = sum(t["shares"] for t in sells)
     total_redeemed = sum(t["shares"] for t in redeems)
-    net_shares = total_bought - total_sold - total_redeemed
+    total_merged = sum(t["shares"] for t in merges)
+    total_split = sum(t["shares"] for t in splits)
+    net_shares = total_bought + total_split - total_sold - total_redeemed - total_merged
 
     gross_buy = sum(t["amount_usdc"] for t in buys)
     gross_sell = sum(t["amount_usdc"] for t in sells)
     gross_redeem = sum(t["amount_usdc"] for t in redeems)
+    gross_merge = sum(t["amount_usdc"] for t in merges)
+    gross_split = sum(t["amount_usdc"] for t in splits)
+    gross_entry = gross_buy + gross_split
 
-    avg_buy_price = (gross_buy / total_bought) if total_bought > 0 else 0
+    avg_buy_price = (gross_entry / (total_bought + total_split)) if (total_bought + total_split) > 0 else 0
     avg_sell_price = (gross_sell / total_sold) if total_sold > 0 else 0
 
     final_pnl = trade_details[-1]["cumulative_realized_pnl"]
 
     # 时间维度
-    buy_ts = [t["timestamp"] for t in buys if t["timestamp"]]
-    sell_ts = [t["timestamp"] for t in sells if t["timestamp"]]
+    entry_ts = [t["timestamp"] for t in entries if t["timestamp"]]
     exit_ts = [t["timestamp"] for t in exits if t["timestamp"]]
     all_ts = [t["timestamp"] for t in trade_details if t["timestamp"]]
 
-    first_entry = min(buy_ts) if buy_ts else 0
-    last_entry = max(buy_ts) if buy_ts else 0
+    first_entry = min(entry_ts) if entry_ts else 0
+    last_entry = max(entry_ts) if entry_ts else 0
     first_exit = min(exit_ts) if exit_ts else 0
     last_exit = max(exit_ts) if exit_ts else 0
     holding = (max(all_ts) - min(all_ts)) if len(all_ts) > 1 else 0
 
-    roi = (final_pnl / gross_buy) if gross_buy > 0 else 0
+    roi = (final_pnl / gross_entry) if gross_entry > 0 else 0
     won = "won" if final_pnl > 0.01 else ("lost" if final_pnl < -0.01 else "breakeven")
 
     held_to_res = len(redeems) > 0
     closed_before = not held_to_res and abs(net_shares) < 1e-3
 
-    scaled_in = len(buys) > 1
-    scaled_out = len(sells) > 1 or (len(sells) >= 1 and len(redeems) >= 1)
+    scaled_in = len(entries) > 1
+    scaled_out = len(exits) > 1
 
     # 轮次统计
     round_trips = 0
     pos = 0.0
     for t in trade_details:
-        if t["action_type"] == "buy":
+        if t["action_type"] in ("buy", "split"):
             pos += t["shares"]
-        elif t["action_type"] in ("sell", "redeem"):
+        elif t["action_type"] in ("sell", "redeem", "merge"):
             pos = max(0.0, pos - t["shares"])
             if pos < 1e-3:
                 round_trips += 1
@@ -716,13 +897,19 @@ def build_position_summary(
         "number_of_buys": len(buys),
         "number_of_sells": len(sells),
         "number_of_redeems": len(redeems),
+        "number_of_merges": len(merges),
+        "number_of_splits": len(splits),
         "total_shares_bought": round(total_bought, 6),
         "total_shares_sold": round(total_sold, 6),
         "total_shares_redeemed": round(total_redeemed, 6),
+        "total_shares_merged": round(total_merged, 6),
+        "total_shares_split": round(total_split, 6),
         "net_shares": round(net_shares, 6),
         "gross_buy_amount": round(gross_buy, 6),
         "gross_sell_amount": round(gross_sell, 6),
         "gross_redeem_amount": round(gross_redeem, 6),
+        "gross_merge_amount": round(gross_merge, 6),
+        "gross_split_amount": round(gross_split, 6),
         "avg_buy_price": round(avg_buy_price, 6),
         "avg_sell_price": round(avg_sell_price, 6),
         "max_position_size_shares": max_position,
@@ -869,6 +1056,8 @@ def compute_ai_features(
     buys = [t for t in trade_details if t["action_type"] == "buy"]
     sells = [t for t in trade_details if t["action_type"] == "sell"]
     redeems = [t for t in trade_details if t["action_type"] == "redeem"]
+    merges = [t for t in trade_details if t["action_type"] == "merge"]
+    all_exits = sells + redeems + merges
 
     # ── entry_style ──────────────────────────────────────────────────
     if not buys:
@@ -889,10 +1078,12 @@ def compute_ai_features(
     # ── exit_style ───────────────────────────────────────────────────
     if redeems:
         exit_style = "hold-to-resolution"
-    elif not sells:
+    elif merges and not sells:
+        exit_style = "merge-exit"
+    elif not all_exits:
         exit_style = "no-exit-yet"
-    elif len(sells) == 1:
-        s = sells[0]
+    elif len(all_exits) == 1:
+        s = all_exits[0]
         if s["is_close_trade"]:
             avg_e = buys[-1]["avg_entry_price_after_trade"] if buys else 0
             exit_style = (
@@ -901,7 +1092,7 @@ def compute_ai_features(
         else:
             exit_style = "partial-take-profit"
     else:
-        any_close = any(s["is_close_trade"] for s in sells)
+        any_close = any(s["is_close_trade"] for s in all_exits)
         exit_style = "scale-out" if not any_close else "partial-take-profit"
 
     # ── risk_style ───────────────────────────────────────────────────
@@ -1046,8 +1237,10 @@ def _process_position_group(
         mi["market_question"] = titles[0]
 
     # position_status
-    nb = sum(safe_float(t.get("size")) for t in trades if t.get("side") == "BUY")
-    ns = sum(safe_float(t.get("size")) for t in trades if t.get("side") == "SELL")
+    _entry_types = {"BUY", "SPLIT"}
+    _exit_types = {"SELL", "MERGE"}
+    nb = sum(safe_float(t.get("size")) for t in trades if t.get("side") in _entry_types or t.get("type") == "SPLIT")
+    ns = sum(safe_float(t.get("size")) for t in trades if t.get("side") in _exit_types or t.get("type") == "MERGE")
     nr = sum(
         safe_float(t.get("size")) for t in trades if t.get("type") == "REDEEM"
     )
@@ -1125,7 +1318,10 @@ def main() -> None:
         sys.exit(0)
 
     # ── Step 3 ────────────────────────────────────────────────────────
-    groups = filter_position_trades(records, position_name, condition_ids)
+    tokens_map: dict[str, list[dict]] = market_info.get("_tokens_map", {})
+    groups = filter_position_trades(
+        records, position_name, condition_ids, tokens_map
+    )
     if not groups:
         print("\n❌ 未找到匹配的持仓记录。")
         sys.exit(0)
@@ -1146,7 +1342,10 @@ def main() -> None:
             records = fetch_wallet_trades(
                 session, wallet, condition_ids, start_ts=None
             )
-            groups = filter_position_trades(records, position_name, condition_ids)
+            tokens_map = market_info.get("_tokens_map", {})
+            groups = filter_position_trades(
+                records, position_name, condition_ids, tokens_map
+            )
             if not groups:
                 print("\n❌ 精确回拉后未找到匹配记录。")
                 sys.exit(0)
@@ -1217,7 +1416,15 @@ def main() -> None:
         pnl = ps.get("final_realized_pnl", 0)
         sign = "+" if pnl >= 0 else ""
         print(f"\n  [{mi.get('outcome_name', '?')}] {mi.get('market_question', '')[:50]}")
-        print(f"    交易     : {ps['number_of_buys']}买 / {ps['number_of_sells']}卖 / {ps['number_of_redeems']}赎回")
+        trade_counts = (
+            f"{ps['number_of_buys']}买 / {ps['number_of_sells']}卖 / "
+            f"{ps['number_of_redeems']}赎回"
+        )
+        if ps.get('number_of_merges', 0):
+            trade_counts += f" / {ps['number_of_merges']}合并"
+        if ps.get('number_of_splits', 0):
+            trade_counts += f" / {ps['number_of_splits']}拆分"
+        print(f"    交易     : {trade_counts}")
         print(f"    买入总额 : ${ps['gross_buy_amount']:,.2f}")
         print(f"    已实现PnL: {sign}${pnl:,.2f} ({ps['won_or_lost']})")
         print(f"    ROI      : {ps['roi_realized']:.2%}")
