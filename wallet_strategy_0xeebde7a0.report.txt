@@ -1,0 +1,164 @@
+============================================================================
+  Polymarket 钱包策略画像
+  Wallet: 0xeebde7a0e019a63e6b476eb425505b7b3e6eba30
+  生成时间: 2026-04-15T19:27:42.633647+00:00
+============================================================================
+
+◆ Polymarket 官方数据 (交叉验证)
+  Pseudonym            : Bonereaper
+  All-time profit      : $+451,535.11
+
+◆ 本次分析时间窗口
+  起    : 2026-04-15 16:00:06 UTC
+  止    : 2026-04-15 19:24:20 UTC
+  跨度  : 3.4 小时
+  市场数: 99
+
+◆ 样本规模: 最近 198 个 (conditionId, outcome) 持仓
+  已平仓 166 | 未平仓 32
+
+◆ 盈亏总览
+  累计已实现 PnL : $+3,042.78
+  累计买入金额   : $155,288.69
+  累计卖出金额   : $0.00
+  累计赎回金额   : $92,790.08
+  胜 / 负 / 平   : 92 / 77 / 29
+  胜率           : 46.5%
+  平均盈利单     : $+105.19
+  平均亏损单     : $-86.16
+  盈亏比 (PF)    : 1.459
+
+◆ 仓位规模（每个市场投入资金）
+  中位数         : $202.59
+  P90            : $2,617.28
+  最大单市场仓   : $6,483.91
+  平均交易次数/市场: 40.35
+
+◆ 持仓时长
+  中位数         : 20.0m17.0s
+
+◆ 入场方式分布
+  scale-in             : 196  (99.0%)
+  chase                : 2  (1.0%)
+
+◆ 出场方式分布
+  merge-exit           : 89  (44.9%)
+  hold-to-resolution   : 81  (40.9%)
+  no-exit-yet          : 28  (14.1%)
+
+◆ 风格 / 时机质量
+  风格-aggressive      : 88  (44.4%)
+  风格-conservative    : 64  (32.3%)
+  风格-moderate        : 46  (23.2%)
+  时机-poor            : 60  (30.3%)
+  时机-bad             : 45  (22.7%)
+  时机-excellent       : 41  (20.7%)
+  时机-fair            : 31  (15.7%)
+  时机-good            : 21  (10.6%)
+
+◆ 市场类别 (Top 8)
+  unavailable               : 198  (100.0%)
+
+◆ 仓位管理 / 止损特征
+  加仓均价下降 (越跌越买): 97 次
+  加仓均价上升 (追涨)    : 91 次
+  分批建仓 (scale-in)    : 198 次
+  分批减仓 (scale-out)   : 81 次
+  主动止损卖出 (亏损卖出): 0 次
+  止盈卖出               : 0 次
+  持有至结算-赢          : 35 次
+  持有至结算-输          : 46 次
+
+◆ 单笔极值
+  最佳: $+684.65 (ROI 262.97%, 投入 $260.35)  Down  Bitcoin Up or Down - April 15, 12:35PM-12:40PM ET
+  最差: $-556.82 (ROI -36.15%, 投入 $1540.23)  Up  Bitcoin Up or Down - April 15, 12:20PM-12:25PM ET
+
+◆ 市场级盈亏 (对齐网页视图，合并同 cid 的 Yes+No)
+  共 99 个独立市场
+
+◆ 最盈利市场 Top 15 (市场级)
+  +$  440.57  ROI  +29.3%  买入 $  1,505  赎回 $    679  合并 $ 1,266  [closed/Down+Up]  Bitcoin Up or Down - April 15, 2:55PM-3:00PM ET
+  +$  393.70  ROI  +34.0%  买入 $  1,158  赎回 $    168  合并 $ 1,383  [closed/Down+Up]  Bitcoin Up or Down - April 15, 1:30PM-1:35PM ET
+  +$  383.72  ROI  +36.2%  买入 $  1,058  赎回 $    448  合并 $   994  [closed/Up+Down]  Bitcoin Up or Down - April 15, 12:35PM-12:40PM ET
+  +$  257.37  ROI  +24.1%  买入 $  1,067  赎回 $      0  合并 $ 1,325  [closed/Down+Up]  Bitcoin Up or Down - April 15, 2:05PM-2:10PM ET
+  +$  252.40  ROI   +6.6%  买入 $  3,826  赎回 $  3,276  合并 $   802  [closed/Down+Up]  Bitcoin Up or Down - April 15, 1:15PM-1:30PM ET
+  +$  218.96  ROI  +11.2%  买入 $  1,950  赎回 $    469  合并 $ 1,699  [closed/Up+Down]  Bitcoin Up or Down - April 15, 2:50PM-2:55PM ET
+  +$  191.69  ROI   +3.1%  买入 $  6,127  赎回 $  4,924  合并 $ 1,394  [closed/Up+Down]  Bitcoin Up or Down - April 15, 2:45PM-2:50PM ET
+  +$  164.43  ROI   +2.4%  买入 $  6,973  赎回 $  5,302  合并 $ 1,835  [closed/Up+Down]  Bitcoin Up or Down - April 15, 12:30PM-12:35PM ET
+  +$  163.18  ROI   +4.2%  买入 $  3,888  赎回 $  3,325  合并 $   726  [closed/Down+Up]  Bitcoin Up or Down - April 15, 2:00PM-2:15PM ET
+  +$  158.03  ROI   +2.8%  买入 $  5,682  赎回 $  5,509  合并 $   332  [closed/Up+Down]  Bitcoin Up or Down - April 15, 1:50PM-1:55PM ET
+  +$  147.44  ROI   +2.6%  买入 $  5,659  赎回 $  5,276  合并 $   530  [closed/Down+Up]  Bitcoin Up or Down - April 15, 12:00PM-12:15PM ET
+  +$  139.14  ROI   +8.3%  买入 $  1,680  赎回 $    465  合并 $ 1,354  [closed/Up+Down]  Bitcoin Up or Down - April 15, 1:45PM-1:50PM ET
+  +$  123.32  ROI  +12.2%  买入 $  1,014  赎回 $    140  合并 $   997  [closed/Up+Down]  Bitcoin Up or Down - April 15, 1:00PM-1:05PM ET
+  +$  123.23  ROI   +2.0%  买入 $  6,026  赎回 $  5,225  合并 $   924  [closed/Down+Up]  Bitcoin Up or Down - April 15, 2:25PM-2:30PM ET
+  +$  120.43  ROI   +2.1%  买入 $  5,872  赎回 $  5,304  合并 $   689  [closed/Up+Down]  Bitcoin Up or Down - April 15, 12:55PM-1:00PM ET
+
+◆ 最亏损市场 Top 10 (市场级)
+  $ -294.01  ROI   -8.3%  买入 $  3,544  赎回 $    136  合并 $ 3,114  [closed/Down+Up]  Bitcoin Up or Down - April 15, 2:00PM-2:05PM ET
+  $ -215.44  ROI   -5.4%  买入 $  3,995  赎回 $  2,382  合并 $ 1,398  [closed/Down+Up]  Bitcoin Up or Down - April 15, 12:45PM-1:00PM ET
+  $ -103.37  ROI  -15.5%  买入 $    668  赎回 $      0  合并 $   565  [closed/Down+Up]  Bitcoin Up or Down - April 15, 2:30PM-2:35PM ET
+  $ -103.36  ROI   -7.0%  买入 $  1,467  赎回 $      0  合并 $ 1,364  [closed/Up+Down]  Bitcoin Up or Down - April 15, 1:20PM-1:25PM ET
+  $  -72.60  ROI   -3.8%  买入 $  1,921  赎回 $    173  合并 $ 1,675  [closed/Down+Up]  Bitcoin Up or Down - April 15, 1:05PM-1:10PM ET
+  $  -71.62  ROI   -1.1%  买入 $  6,266  赎回 $  5,273  合并 $   921  [closed/Up+Down]  Bitcoin Up or Down - April 15, 2:35PM-2:40PM ET
+  $  -69.67  ROI  -11.6%  买入 $    600  赎回 $     23  合并 $   507  [closed/Up+Down]  Bitcoin Up or Down - April 15, 12:30PM-12:45PM ET
+  $  -66.68  ROI   -1.9%  买入 $  3,411  赎回 $  2,078  合并 $ 1,267  [closed/Down+Up]  Bitcoin Up or Down - April 15, 2:30PM-2:45PM ET
+  $  -45.93  ROI   -0.7%  买入 $  6,367  赎回 $  4,628  合并 $ 1,694  [closed/Down+Up]  Bitcoin Up or Down - April 15, 1:35PM-1:40PM ET
+  $  -38.16  ROI   -7.8%  买入 $    487  赎回 $     66  合并 $   383  [closed/Up+Down]  Bitcoin Up or Down - April 15, 1:45PM-2:00PM ET
+
+◆ 逐 outcome 盈亏 (最盈利 Top 10)
+  +$  684.65  ROI +263.0%  资金 $   260  买53卖0赎1  [scale-in/hold-to-resolution]  Down  Bitcoin Up or Down - April 15, 12:35PM-12:40PM ET
+  +$  566.37  ROI +135.8%  资金 $   417  买78卖0赎1  [scale-in/hold-to-resolution]  Down  Bitcoin Up or Down - April 15, 12:20PM-12:25PM ET
+  +$  556.46  ROI +690.6%  资金 $    81  买11卖0赎1  [scale-in/hold-to-resolution]  Up  Bitcoin Up or Down - April 15, 12:40PM-12:45PM ET
+  +$  480.80  ROI +130.4%  资金 $   369  买51卖0赎0  [scale-in/merge-exit]  Down  Bitcoin Up or Down - April 15, 2:50PM-2:55PM ET
+  +$  428.54  ROI  +87.6%  资金 $   489  买62卖0赎0  [scale-in/merge-exit]  Up  Bitcoin Up or Down - April 15, 12:30PM-12:35PM ET
+  +$  409.28  ROI  +90.9%  资金 $   450  买34卖0赎1  [scale-in/hold-to-resolution]  Up  Bitcoin Up or Down - April 15, 1:30PM-1:35PM ET
+  +$  366.53  ROI +110.8%  资金 $   331  买46卖0赎0  [scale-in/merge-exit]  Down  Bitcoin Up or Down - April 15, 2:45PM-2:50PM ET
+  +$  341.39  ROI +190.7%  资金 $   179  买54卖0赎0  [scale-in/merge-exit]  Down  Bitcoin Up or Down - April 15, 1:00PM-1:15PM ET
+  +$  318.62  ROI +101.2%  资金 $   315  买61卖0赎0  [scale-in/merge-exit]  Down  Bitcoin Up or Down - April 15, 2:30PM-2:45PM ET
+  +$  307.52  ROI   +9.1%  资金 $ 3,369  买89卖0赎1  [scale-in/hold-to-resolution]  Up  Bitcoin Up or Down - April 15, 1:15PM-1:30PM ET
+
+◆ 逐 outcome 盈亏 (最亏损 Top 10)
+  $ -556.82  ROI  -36.2%  资金 $ 1,540  买63卖0赎0  [scale-in/merge-exit]  Up  Bitcoin Up or Down - April 15, 12:20PM-12:25PM ET
+  $ -487.71  ROI  -43.4%  资金 $ 1,125  买23卖0赎0  [scale-in/merge-exit]  Down  Bitcoin Up or Down - April 15, 12:40PM-12:45PM ET
+  $ -385.29  ROI  -12.4%  资金 $ 3,096  买89卖0赎1  [scale-in/hold-to-resolution]  Up  Bitcoin Up or Down - April 15, 2:30PM-2:45PM ET
+  $ -300.95  ROI  -32.0%  资金 $   939  买58卖0赎0  [scale-in/merge-exit]  Up  Bitcoin Up or Down - April 15, 12:15PM-12:30PM ET
+  $ -300.93  ROI  -37.7%  资金 $   798  买31卖0赎0  [scale-in/merge-exit]  Up  Bitcoin Up or Down - April 15, 12:35PM-12:40PM ET
+  $ -282.00  ROI   -4.8%  资金 $ 5,849  买101卖0赎1  [scale-in/hold-to-resolution]  Up  Bitcoin Up or Down - April 15, 2:15PM-2:20PM ET
+  $ -264.10  ROI   -4.1%  资金 $ 6,484  买155卖0赎1  [scale-in/hold-to-resolution]  Down  Bitcoin Up or Down - April 15, 12:30PM-12:35PM ET
+  $ -261.84  ROI  -16.6%  资金 $ 1,581  买75卖0赎1  [scale-in/hold-to-resolution]  Up  Bitcoin Up or Down - April 15, 2:50PM-2:55PM ET
+  $ -245.01  ROI   -7.4%  资金 $ 3,326  买102卖0赎1  [scale-in/hold-to-resolution]  Up  Bitcoin Up or Down - April 15, 12:45PM-1:00PM ET
+  $ -244.21  ROI  -26.4%  资金 $   926  买52卖0赎0  [scale-in/merge-exit]  Down  Bitcoin Up or Down - April 15, 1:20PM-1:25PM ET
+
+◆ 同市场双边持仓 (做市/对冲特征)
+  双边市场 99/99 (100.0%) PnL $+3,042.78
+  单边市场 0/99 PnL $+0.00
+
+◆ 亏损发生在哪种出场方式
+  hold-to-resolution        : 46 笔亏损, 平均 $-76.92
+  merge-exit                : 31 笔亏损, 平均 $-99.88
+
+◆ 盈利发生在哪种出场方式
+  merge-exit                : 58 笔盈利
+  hold-to-resolution        : 34 笔盈利
+
+◆ 策略画像（自动解读）
+  · 交易对象：样本几乎全部在 BTC/ETH 5-15分钟 Up/Down 微型预测市场
+  · 中位持仓 20.0m17.0s，平均每市场 40.35 笔操作 → 高频短线
+  · 仓位梯度：中位 $203 / P90 $2617 / 最大 $6484，多数小仓探路 + 少量大仓追击
+  · 【止损核心】从不使用 SELL 主动止损 (0 次) — 改用两种非市价方式控制亏损：
+      a) MERGE：买入对侧凑成 YES+NO 对，合并赎回 $1/对，锁定小额可控亏损
+      b) 持有至结算让输的那一边归零：每份代币最大亏损 = 买入价，结构性封顶
+  · 【做市/对冲】100% 市场同时持 Yes 和 No 两侧 — 倾向建立双边头寸后根据价格偏移择优平仓或用 MERGE 复原
+  · 【建仓节奏】198/198 市场采用分批建仓 (scale-in)，其中越跌越买 97 次 / 追涨 91 次
+  · 出场偏好：81/198 持有至结算 (赢 35 / 输 46) — 非常依赖赎回而非二级市场卖出
+  · 风控表现：最差单笔 $-557 vs 最佳 $+685 — 单笔最大亏损被结构性封顶在个位百分比
+
+  ➤ 核心策略推断：
+    在高频微型预测市场上（BTC/ETH 5~15m Up/Down）做单笔 ~$50 轻仓 + 偶尔 ~$1k 重仓 的
+    「不对称赌对小概率高赔率」策略。止损依赖 Polymarket 原生 CTF 机制：
+      1. MERGE 对冲 (消除方向性、回收本金 − ε)，
+      2. 持有到期让亏损那一侧归零 (天然最大亏损 = 买入价)，
+      3. 几乎不使用 SELL 主动平仓。
+    从不触及杠杆/期货清算风险，每个市场最大损失恒定可计算。
+
+============================================================================
