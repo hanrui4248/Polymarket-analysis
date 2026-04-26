@@ -305,6 +305,43 @@ def _lookup_cid_by_slug(session: requests.Session, slug: str) -> str:
     return ""
 
 
+def _fetch_official_position(
+    session: requests.Session, wallet: str, condition_id: str
+) -> dict[str, dict]:
+    """
+    从 Polymarket /positions（开仓） + /closed-positions（已结）按 outcome 拉官方汇总。
+    返回字段是 polymarket UI 的真实来源（avgPrice / totalBought / realizedPnl /
+    cashPnl / currentValue / initialValue ...）。
+
+    avgPrice 在有 MERGE 的市场会与本地 FIFO 计算的 buy 均价不同 —
+    polymarket 用 merge 时的市场价格做 cost basis 调整，公式不开源，
+    所以直接采用官方值确保与 UI 一致。
+    """
+    out: dict[str, dict] = {}
+    for endpoint in ("positions", "closed-positions"):
+        _throttle()
+        try:
+            r = session.get(
+                f"{DATA_API}/{endpoint}",
+                params={"user": wallet, "market": condition_id},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            if not isinstance(data, list):
+                continue
+            for p in data:
+                if not isinstance(p, dict):
+                    continue
+                oc = (p.get("outcome") or "").strip()
+                if oc and oc not in out:
+                    out[oc] = p
+        except Exception:
+            continue
+    return out
+
+
 def _lookup_market_by_cid(
     session: requests.Session, condition_id: str
 ) -> Optional[dict]:
@@ -598,17 +635,24 @@ def filter_position_trades(
               f" (${safe_float(r.get('usdcSize')):.2f}) → 分配到 {num_outcomes} 个 outcome"
               f" (每侧 ${usdc_per_side:.2f})")
 
-    # ── 按剩余持仓比例分配无归属的 REDEEM ────────────────────────────
-    # CTF 的 redeemPositions 是整市场结算，赢方 $1/份、输方 $0/份。
-    # 通过各侧已知的 买入-卖出-合并 计算剩余持仓，按比例分配 USDC。
+    # ── 将无归属 REDEEM 整笔分配给"剩余持仓 ≈ redeem.size"的那一侧 ──
+    # CTF 的 redeemPositions 按 outcome 调用：调谁就只把谁的 shares 转为 USDC。
+    # 赢方 $1/份、输方 $0/份。一笔 REDEEM 只属于其中一侧，绝不能按比例拆分。
+    # 用 size 与各侧 remaining 的最小差判断归属（误差 < 1e-3 share 认为匹配）。
     for r in orphan_redeems:
         cid = r.get("conditionId", "unknown")
         matching_keys = [k for k in groups if k.startswith(f"{cid}|")]
 
-        if len(matching_keys) <= 1:
-            target = matching_keys[0] if matching_keys else f"{cid}|unknown"
-            groups.setdefault(target, []).append(r)
+        if not matching_keys:
+            groups.setdefault(f"{cid}|unknown", []).append(r)
             continue
+
+        if len(matching_keys) == 1:
+            groups[matching_keys[0]].append(r)
+            continue
+
+        redeem_size = safe_float(r.get("size"))
+        redeem_usdc = safe_float(r.get("usdcSize"))
 
         remaining_per_group: dict[str, float] = {}
         for gkey in matching_keys:
@@ -623,31 +667,14 @@ def filter_position_trades(
                     remaining -= rsize
             remaining_per_group[gkey] = max(0.0, remaining)
 
-        total_remaining = sum(remaining_per_group.values())
-        total_usdc = safe_float(r.get("usdcSize"))
-        total_size = safe_float(r.get("size"))
-
-        if total_remaining < 1e-6:
-            largest = max(matching_keys, key=lambda k: len(groups[k]))
-            groups[largest].append(r)
-            print(f"  ⚠ REDEEM ${total_usdc:.2f} 无法按持仓分配，回退到最大组")
-        else:
-            attributed = 0
-            for gkey in matching_keys:
-                ratio = remaining_per_group[gkey] / total_remaining
-                if ratio < 1e-6:
-                    continue
-                entry = dict(r)
-                entry["size"] = total_size * ratio
-                entry["usdcSize"] = total_usdc * ratio
-                entry["_usdc_per_side"] = total_usdc * ratio
-                groups[gkey].append(entry)
-                attributed += 1
-                _, oname = gkey.split("|", 1)
-                print(f"    {oname}: 剩余 {remaining_per_group[gkey]:.2f} 份"
-                      f" → 分得 REDEEM {total_size * ratio:.2f} 份"
-                      f" (${total_usdc * ratio:.2f})")
-            print(f"  ✓ REDEEM ${total_usdc:.2f} 按持仓比例分配到 {attributed} 个 outcome")
+        best_match = min(
+            matching_keys,
+            key=lambda k: abs(remaining_per_group[k] - redeem_size),
+        )
+        groups[best_match].append(r)
+        _, oname = best_match.split("|", 1)
+        print(f"  ✓ REDEEM {redeem_size:.2f} 份 (${redeem_usdc:.2f}) → "
+              f"{oname} (剩余 {remaining_per_group[best_match]:.2f} 股最匹配)")
 
     # 每组按时间排序
     for trades in groups.values():
@@ -959,28 +986,45 @@ def _fetch_price_history(
     token_id: str,
 ) -> list[dict]:
     """
-    从 CLOB API 获取价格历史。
-    返回 [{"t": unix_ts, "p": float_price}, ...] 按时间升序。
+    从 CLOB API 获取价格历史，按时间升序返回 [{"t": unix_ts, "p": price}, ...]。
+
+    interval='all' 在 CLOB 后端会被 down-sample 到 ~10min 粒度，
+    对短期市场（5min BTC UpDown）粒度不够。'1d' 返回 ~40s 粒度，
+    对绝大多数链上交易够用；超过 24h 的老交易降级回 'all'。
     """
     if not token_id or token_id == UNAVAILABLE:
         return []
 
-    _throttle()
-    try:
-        resp = session.get(
-            f"{CLOB_API}/prices-history",
-            params={"market": token_id, "interval": "all", "fidelity": 1},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        history = data.get("history", data) if isinstance(data, dict) else data
-        if isinstance(history, list):
-            history.sort(key=lambda x: x.get("t", 0))
-            return history
-    except Exception as exc:
-        print(f"  ⚠ 价格历史获取失败: {exc}")
-    return []
+    candidates: list[dict] = []
+    for interval in ("1d", "all"):
+        _throttle()
+        try:
+            resp = session.get(
+                f"{CLOB_API}/prices-history",
+                params={"market": token_id, "interval": interval, "fidelity": 1},
+                timeout=30,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            history = data.get("history", data) if isinstance(data, dict) else data
+            if isinstance(history, list) and history:
+                candidates.append({"interval": interval, "history": history})
+        except Exception:
+            continue
+
+    if not candidates:
+        return []
+
+    # 合并所有粒度的样本去重，得到最密集的时间序列
+    merged: dict[int, float] = {}
+    for c in candidates:
+        for pt in c["history"]:
+            t = pt.get("t")
+            p = pt.get("p")
+            if t is not None and p is not None and t not in merged:
+                merged[t] = p
+    return [{"t": t, "p": p} for t, p in sorted(merged.items())]
 
 
 def _bisect_price(history: list[dict], target_ts: int) -> Optional[float]:
@@ -1215,6 +1259,7 @@ def _process_position_group(
     trades: list[dict],
     market_info: dict,
     session: requests.Session,
+    wallet: str = "",
 ) -> dict:
     """处理一个 (conditionId|outcome) 分组，返回完整持仓分析对象。"""
     cid_part, outcome_part = key.split("|", 1)
@@ -1229,29 +1274,32 @@ def _process_position_group(
     mi["position_side"] = outcome_part
     mi["market_id"] = cid_part
 
+    # ── 一次性获取 tokens（含 winner 标记）─────────────────────────
+    # _tokens_map 通常由 fetch_market_info 填充；若缺失则用 CLOB 的
+    # /markets/{conditionId} 兜底（CLOB 的返回包含权威的 winner 字段）。
+    tokens_map = market_info.get("_tokens_map", {})
+    tokens = tokens_map.get(cid_part, [])
+    if not tokens:
+        detail = _lookup_market_by_cid(session, cid_part)
+        if detail:
+            tokens = detail.get("tokens", [])
+            tokens_map[cid_part] = tokens
+            market_info["_tokens_map"] = tokens_map
+
     # token_id — 优先从原始记录的 asset 字段提取
     token_ids = list({t.get("asset", "") for t in trades if t.get("asset")})
     token_id = token_ids[0] if token_ids else UNAVAILABLE
-
-    # 回退：从 market_info 的 _tokens_map 或 Gamma API 获取
-    if token_id == UNAVAILABLE:
-        tokens_map = market_info.get("_tokens_map", {})
-        tokens = tokens_map.get(cid_part, [])
-        if not tokens:
-            detail = _lookup_market_by_cid(session, cid_part)
-            if detail:
-                tokens = detail.get("tokens", [])
-        if tokens:
-            for tk in tokens:
-                if isinstance(tk, dict):
-                    tk_outcome = tk.get("outcome", "")
-                    if tk_outcome.lower() == outcome_part.lower() or not outcome_part:
-                        token_id = tk.get("token_id", UNAVAILABLE)
-                        break
-            if token_id == UNAVAILABLE and tokens:
-                token_id = tokens[0].get("token_id", UNAVAILABLE)
-            if token_id != UNAVAILABLE:
-                print(f"  ✓ 通过 Gamma API 补全 token_id: {token_id[:30]}...")
+    if token_id == UNAVAILABLE and tokens:
+        for tk in tokens:
+            if isinstance(tk, dict):
+                tk_outcome = (tk.get("outcome") or "").strip()
+                if tk_outcome.lower() == outcome_part.lower() or not outcome_part:
+                    token_id = tk.get("token_id", UNAVAILABLE)
+                    break
+        if token_id == UNAVAILABLE:
+            token_id = tokens[0].get("token_id", UNAVAILABLE)
+        if token_id != UNAVAILABLE:
+            print(f"  ✓ 补全 token_id: {token_id[:30]}...")
     mi["token_id"] = token_id
 
     # market title — 从原始记录取
@@ -1267,7 +1315,46 @@ def _process_position_group(
     nr = sum(
         safe_float(t.get("size")) for t in trades if t.get("type") == "REDEEM"
     )
-    mi["position_status"] = "open" if (nb - ns - nr) > 0.001 else "closed"
+    leftover = nb - ns - nr
+
+    # ── 已结算但未赎回的剩余股仿真 redemption ────────────────────────
+    # 场景：市场已结算，赢方调用 redeemPositions 取走 USDC，输方往往不会再调
+    # （因为输方每股 = $0），但其亏损是真实存在的。这里给输方剩余股补一个
+    # 合成 REDEEM，使 PnL 反映 polymarket UI 显示的"已结算"盈亏。
+    winner_by_outcome: dict[str, bool] = {}
+    for tk in tokens:
+        if isinstance(tk, dict):
+            tk_oc = (tk.get("outcome") or "").strip()
+            if tk_oc:
+                winner_by_outcome[tk_oc.lower()] = bool(tk.get("winner"))
+    is_resolved = bool(winner_by_outcome) and any(
+        v for v in winner_by_outcome.values()
+    )
+
+    if leftover > 1e-3 and is_resolved:
+        is_winner = winner_by_outcome.get(outcome_part.lower(), False)
+        synth_price = 1.0 if is_winner else 0.0
+        synth_usdc = leftover * synth_price
+        last_ts = max((safe_int(t.get("timestamp")) for t in trades), default=0)
+        synthetic = {
+            "type": "REDEEM",
+            "side": "",
+            "outcome": outcome_part,
+            "asset": "",
+            "conditionId": cid_part,
+            "size": leftover,
+            "usdcSize": synth_usdc,
+            "price": synth_price,
+            "timestamp": last_ts + 1,
+            "transactionHash": "synthetic-resolution",
+            "_synthetic": True,
+            "title": mi.get("market_question", ""),
+        }
+        trades = list(trades) + [synthetic]
+        leftover = 0.0
+        print(f"  ✓ 仿真结算 REDEEM: {synthetic['size']:.2f} 股 × ${synth_price} = ${synth_usdc:.2f}"
+              f" ({'赢方' if is_winner else '输方'})")
+    mi["position_status"] = "open" if leftover > 0.001 else "closed"
 
     # Step 4
     print("[4/6] 处理逐笔交易明细 (FIFO)...")
@@ -1279,6 +1366,29 @@ def _process_position_group(
 
     # Step 6 (summary)
     summary = build_position_summary(details, mi, max_pos, max_cap)
+
+    # ── 附带 Polymarket 官方 position API 数据（仅作参考） ──────────
+    # 主字段（avg_buy_price / total_shares_bought / final_realized_pnl）
+    # 全部用本地 FIFO 计算 — 即 "总买入花费 / 总买入股数"，反映交易者
+    # 真实平均成交价，对行为分析（他愿意以多少钱买这一侧）有可解释性。
+    #
+    # Polymarket UI 上的 avgPrice 是 merge-aware 的会计修饰（公式未公开），
+    # 仅作为对照写入 polymarket_official 子字段，便于和 UI 比对验证。
+    if wallet:
+        official = _fetch_official_position(session, wallet, cid_part).get(
+            outcome_part
+        )
+        if official:
+            summary["polymarket_official"] = {
+                k: official.get(k)
+                for k in (
+                    "avgPrice", "totalBought", "realizedPnl", "cashPnl",
+                    "percentPnl", "percentRealizedPnl", "currentValue",
+                    "initialValue", "size", "curPrice",
+                )
+                if official.get(k) is not None
+            }
+
     ai = compute_ai_features(details, summary)
     summary["ai_analysis_features"] = ai
 
@@ -1407,7 +1517,7 @@ def main() -> None:
 
     # ── Step 4-6: 处理每个持仓 ────────────────────────────────────────
     positions = [
-        _process_position_group(key, trades, market_info, session)
+        _process_position_group(key, trades, market_info, session, wallet=wallet)
         for key, trades in groups.items()
     ]
 
@@ -1448,13 +1558,31 @@ def main() -> None:
         if ps.get('number_of_splits', 0):
             trade_counts += f" / {ps['number_of_splits']}拆分"
         print(f"    交易     : {trade_counts}")
+        print(f"    买入股数 : {ps['total_shares_bought']:,.2f} 股 (实际成交均价 ${ps['avg_buy_price']:.4f})")
         print(f"    买入总额 : ${ps['gross_buy_amount']:,.2f}")
         print(f"    已实现PnL: {sign}${pnl:,.2f} ({ps['won_or_lost']})")
         print(f"    ROI      : {ps['roi_realized']:.2%}")
+        # Polymarket UI 显示口径（含 merge-aware 调整，仅供对照）
+        official = ps.get('polymarket_official') or {}
+        if official.get('avgPrice') is not None:
+            print(f"    [poly UI : {official.get('totalBought', 0):,.2f} 股 @ ${official.get('avgPrice', 0):.4f}, "
+                  f"PnL ${official.get('realizedPnl', 0):+,.2f}]")
         print(f"    建仓方式 : {ai.get('entry_style', '?')}")
         print(f"    平仓方式 : {ai.get('exit_style', '?')}")
         print(f"    风险风格 : {ai.get('risk_style', '?')}")
         print(f"    时机质量 : {ai.get('timing_quality', '?')}")
+
+    if len(positions) > 1:
+        print(f"\n  ─── 全市场合计 ───")
+        for pos in positions:
+            mi = pos["market_info"]
+            ps = pos["position_summary"]
+            print(f"    [{mi.get('outcome_name', '?'):<6}] {ps['total_shares_bought']:>10,.2f} 股  ${ps['gross_buy_amount']:>10,.2f}")
+        total_shares = sum(p['position_summary']['total_shares_bought'] for p in positions)
+        total_buy = sum(p['position_summary']['gross_buy_amount'] for p in positions)
+        total_pnl = sum(p['position_summary']['final_realized_pnl'] for p in positions)
+        sign_t = "+" if total_pnl >= 0 else ""
+        print(f"    {'合计':<8} {total_shares:>10,.2f} 股  ${total_buy:>10,.2f}  PnL: {sign_t}${total_pnl:,.2f}")
     print(f"\n  输出文件: {output_path}")
     print("=" * 70)
 
