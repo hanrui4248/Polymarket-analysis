@@ -9,7 +9,7 @@
 
 # ──────────────── 默认配置（按需修改） ────────────────
 WALLET="0x2005d16a84ceefa912d4e380cd32e7ff827875ea"
-POSITION="Barcelona Open: Nuno Borges vs Adrian Mannarino"
+POSITION="Timberwolves vs. Nuggets: O/U 230.5"
 START_DATE=""
 OUTPUT=""  # 留空则自动生成文件名
 # ──────────────────────────────────────────────────────

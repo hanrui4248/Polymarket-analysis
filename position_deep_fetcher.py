@@ -308,18 +308,37 @@ def _lookup_cid_by_slug(session: requests.Session, slug: str) -> str:
 def _lookup_market_by_cid(
     session: requests.Session, condition_id: str
 ) -> Optional[dict]:
-    """通过 conditionId 从 Gamma API 获取市场完整信息（含 tokens）。"""
+    """
+    通过 conditionId 获取市场信息。优先使用 CLOB API（精确路径匹配），
+    不用 Gamma /markets?condition_id — 后者的过滤器会被忽略，返回无关市场。
+
+    返回统一字段：question / slug / startDate / endDate / resolvedAt /
+    resolution / closed / resolved / tokens（含 token_id / outcome / winner）
+    """
     _throttle()
     try:
-        r = session.get(
-            f"{GAMMA_API}/markets",
-            params={"condition_id": condition_id, "limit": 1},
-            timeout=15,
-        )
-        r.raise_for_status()
-        items = r.json()
-        if items and isinstance(items, list) and items[0]:
-            return items[0]
+        r = session.get(f"{CLOB_API}/markets/{condition_id}", timeout=15)
+        if r.status_code == 200:
+            m = r.json()
+            if isinstance(m, dict) and m.get("question"):
+                tokens = m.get("tokens") or []
+                winner_token = next(
+                    (t for t in tokens if isinstance(t, dict) and t.get("winner")),
+                    None,
+                )
+                return {
+                    "question": m.get("question"),
+                    "slug": m.get("market_slug"),
+                    "category": m.get("category"),
+                    "startDate": m.get("game_start_time") or m.get("startDate"),
+                    "endDate": m.get("end_date_iso"),
+                    "resolvedAt": m.get("end_date_iso") if m.get("closed") else None,
+                    "resolution": winner_token.get("outcome") if winner_token else None,
+                    "closed": m.get("closed"),
+                    "resolved": bool(winner_token),
+                    "active": m.get("active"),
+                    "tokens": tokens,
+                }
     except Exception:
         pass
     return None
@@ -409,14 +428,18 @@ def fetch_wallet_trades(
 
             print(f"{count} 条")
 
-    # 去重
+    # 去重 — 一个大单可能在同一 transactionHash 下被多个对手方成交，
+    # 每笔 fill 有不同的 price/usdcSize，必须都保留；
+    # 因此 uid 必须包含 price/usdcSize/side 才能区分它们。
     seen: set[str] = set()
     unique: list[dict] = []
     for r in all_records:
         uid = (
             f"{r.get('transactionHash', '')}|{r.get('type', '')}|"
             f"{r.get('timestamp', '')}|{r.get('outcome', '')}|"
-            f"{r.get('conditionId', '')}|{r.get('size', '')}"
+            f"{r.get('conditionId', '')}|{r.get('size', '')}|"
+            f"{r.get('price', '')}|{r.get('usdcSize', '')}|"
+            f"{r.get('side', '')}|{r.get('asset', '')}"
         )
         if uid not in seen:
             seen.add(uid)
