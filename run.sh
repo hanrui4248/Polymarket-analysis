@@ -8,8 +8,8 @@
 #   ./run.sh "市场名称" 0xABC...      ← 覆盖持仓名称 + 钱包地址
 
 # ──────────────── 默认配置（按需修改） ────────────────
-WALLET="0xb27bc932bf8110d8f78e55da7d5f0497a18b5b82"
-POSITION="Bitcoin Up or Down - April 26, 9:45AM-9:50AM ET"
+WALLET="0x7dfc8aa22f2d4d6f9cbf55cf86682a4d2477f54e"
+POSITION="Bitcoin Up or Down - April 29, 12:45AM-12:50AM ET"
 START_DATE=""
 OUTPUT=""  # 留空则自动生成文件名
 # ──────────────────────────────────────────────────────

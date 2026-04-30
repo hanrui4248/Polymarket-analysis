@@ -37,6 +37,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -702,9 +703,12 @@ def filter_position_trades(
 # Module 4 — build_trade_details (FIFO PnL)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_TAPE_OFFSETS_SEC = (1, 5, 10, 20, 30, 60)
+
+
 def _empty_market_context() -> dict:
     """空的市场上下文结构，供后续 enrich 填充"""
-    return {
+    ctx = {
         "market_price_before_trade": UNAVAILABLE,
         "market_price_after_trade": UNAVAILABLE,
         "best_bid_before": UNAVAILABLE,
@@ -723,7 +727,14 @@ def _empty_market_context() -> dict:
         "price_percentile_in_last_24h": UNAVAILABLE,
         "intraday_high_before_trade": UNAVAILABLE,
         "intraday_low_before_trade": UNAVAILABLE,
+        # 来源标记：tape 表示用市场全量 /trades 重建（秒级），
+        # clob 表示降级到 CLOB price-history（~60s 粒度）
+        "price_source": UNAVAILABLE,
     }
+    for s in _TAPE_OFFSETS_SEC:
+        ctx[f"price_{s}s_before"] = UNAVAILABLE
+        ctx[f"price_{s}s_after"] = UNAVAILABLE
+    return ctx
 
 
 def build_trade_details(
@@ -1044,6 +1055,119 @@ def _bisect_price(history: list[dict], target_ts: int) -> Optional[float]:
     return None
 
 
+def _fetch_market_trade_tape(
+    session: requests.Session, condition_id: str, outcome: str
+) -> list[tuple[int, float]]:
+    """
+    拉取整个市场（全部用户）该 outcome 侧的成交记录，按秒重建价格曲线。
+
+    /trades?market=CID 端点提供秒级时间戳的真实成交价，但分页 offset
+    上限约 5000 条，对极活跃市场可能拿不到最早期的 trades —
+    届时落到 CLOB price-history 兜底。
+
+    Returns: 按时间升序的 [(timestamp, last_fill_price), ...]
+    """
+    if not condition_id:
+        return []
+
+    all_trades: list[dict] = []
+    offset = 0
+    while offset <= MAX_OFFSET:
+        _throttle()
+        try:
+            r = session.get(
+                f"{DATA_API}/trades",
+                params={
+                    "market": condition_id,
+                    "limit": PAGE_SIZE,
+                    "offset": offset,
+                    "takerOnly": "false",
+                },
+                timeout=30,
+            )
+            if r.status_code != 200:
+                break
+            page = r.json()
+            if not page:
+                break
+            all_trades.extend(x for x in page if isinstance(x, dict))
+            if len(page) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+        except Exception:
+            break
+
+    by_ts: dict[int, float] = {}
+    for t in all_trades:
+        if t.get("outcome") != outcome:
+            continue
+        ts = safe_int(t.get("timestamp"))
+        p = safe_float(t.get("price"))
+        if ts and p > 0:
+            by_ts[ts] = p  # 同一秒多笔 → 取最后写入的（任意，差异可忽略）
+    return sorted(by_ts.items())
+
+
+_TAPE_MAX_GAP_SEC = 30  # 距离 target 超过 30 秒的样本视为不可靠
+
+
+def _bisect_tape(
+    tape: list[tuple[int, float]],
+    target_ts: int,
+    exclude_self_ts: int = -1,
+    max_gap: int = _TAPE_MAX_GAP_SEC,
+) -> Optional[float]:
+    """
+    在按时间升序的 tape 里查 target_ts 处（含）最近的成交价。
+    若最近样本距 target 超过 max_gap 秒（tape 在该时段没近距离数据），
+    返回 None 让调用方降级到 CLOB price-history。
+    """
+    if not tape or target_ts < tape[0][0]:
+        return None
+    lo, hi = 0, len(tape) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if tape[mid][0] <= target_ts:
+            lo = mid
+        else:
+            hi = mid - 1
+    if tape[lo][0] > target_ts:
+        return None
+    if tape[lo][0] == exclude_self_ts and lo > 0:
+        lo -= 1
+    if target_ts - tape[lo][0] > max_gap:
+        return None
+    return tape[lo][1]
+
+
+def _next_tape_price(
+    tape: list[tuple[int, float]],
+    target_ts: int,
+    exclude_self_ts: int = -1,
+    max_gap: int = _TAPE_MAX_GAP_SEC,
+) -> Optional[float]:
+    """
+    查 target_ts 之后（含）最近的成交价。
+    若最近样本距 target 超过 max_gap 秒则返回 None。
+    """
+    if not tape or target_ts > tape[-1][0]:
+        return None
+    lo, hi = 0, len(tape) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if tape[mid][0] >= target_ts:
+            hi = mid
+        else:
+            lo = mid + 1
+    if tape[lo][0] < target_ts:
+        return None
+    if tape[lo][0] == exclude_self_ts and lo + 1 < len(tape):
+        lo += 1
+    if tape[lo][0] - target_ts > max_gap:
+        return None
+    return tape[lo][1]
+
+
 def _prices_in_range(
     history: list[dict], lo_ts: int, hi_ts: int
 ) -> list[float]:
@@ -1058,10 +1182,19 @@ def enrich_market_context(
     trade_details: list[dict],
     session: requests.Session,
     token_id: str,
+    condition_id: str = "",
+    outcome: str = "",
+    user_market_records: Optional[list[dict]] = None,
 ) -> list[dict]:
     """
-    尝试用 CLOB 价格历史填充每笔交易的 market_context。
-    当 API 无数据时，字段保持 unavailable（不会报错）。
+    填充每笔交易的 market_context：
+      1) CLOB price-history (~60s 粒度) — 长跨度，用于 5m/15m/1h 涨跌幅
+      2) 市场全量 /trades 重建的秒级 tape — 但 API 限制最多 3500 条，
+         极活跃市场早期的 trades 拉不到
+      3) 用户自己在该市场的全部成交（包含对手侧 `1-price` 反推） —
+         用来填补 (2) 拉不到的早期窗口
+
+    任一来源失败时字段保持 unavailable，不会抛错。
     """
     print(f"[5/6] 获取市场价格上下文...")
 
@@ -1070,10 +1203,47 @@ def enrich_market_context(
         return trade_details
 
     history = _fetch_price_history(session, token_id)
-    if not history:
-        print("  ⚠ 无价格历史数据，跳过")
+    if history:
+        print(f"  CLOB 价格历史: {len(history)} 个采样点 (~60s 粒度)")
+
+    market_tape: list[tuple[int, float]] = []
+    if condition_id:
+        market_tape = _fetch_market_trade_tape(session, condition_id, outcome)
+        if market_tape:
+            span = (market_tape[-1][0] - market_tape[0][0]) / 60 if len(market_tape) > 1 else 0
+            print(f"  全市场成交 tape: {len(market_tape)} 个秒级数据点 (跨度 {span:.1f} 分钟)")
+
+    # ── 用户自己的成交（同侧直接用 price，对侧用 1 - price 反推）──
+    user_points: dict[int, float] = {}
+    if user_market_records:
+        for r in user_market_records:
+            if r.get("type") != "TRADE":
+                continue
+            ts = safe_int(r.get("timestamp"))
+            p = safe_float(r.get("price"))
+            if not ts or p <= 0 or p >= 1:
+                continue
+            r_outcome = (r.get("outcome") or "").strip()
+            if r_outcome.lower() == outcome.lower():
+                user_points.setdefault(ts, p)
+            elif r_outcome:  # 对手侧
+                # 二元市场互补：p_this + p_other ≈ 1
+                user_points.setdefault(ts, round(1 - p, 6))
+        if user_points:
+            print(f"  用户自己 + 对手侧反推: {len(user_points)} 个秒级数据点")
+
+    # 合并：tape 优先（市场全量 > 用户单点），用户点补缺
+    merged: dict[int, float] = {ts: p for ts, p in market_tape}
+    for ts, p in user_points.items():
+        merged.setdefault(ts, p)
+    tape = sorted(merged.items())
+    if tape:
+        span = (tape[-1][0] - tape[0][0]) / 60 if len(tape) > 1 else 0
+        print(f"  最终 tape (合并): {len(tape)} 个数据点 (跨度 {span:.1f} 分钟)")
+
+    if not history and not tape:
+        print("  ⚠ 无价格数据，跳过")
         return trade_details
-    print(f"  获取 {len(history)} 个价格数据点")
 
     for td in trade_details:
         ts = td["timestamp"]
@@ -1081,33 +1251,76 @@ def enrich_market_context(
             continue
 
         ctx = td["market_context"]
+        used_tape = False
+        used_clob = False
 
-        p_before = _bisect_price(history, ts - 1)
-        p_after = _bisect_price(history, ts + 60)
+        # ── 多档时间偏移字段，优先用 tape（秒级），再降级 CLOB ─────
+        for s in _TAPE_OFFSETS_SEC:
+            p_b = _bisect_tape(tape, ts - s, exclude_self_ts=ts) if tape else None
+            if p_b is not None:
+                used_tape = True
+            elif history:
+                p_b = _bisect_price(history, ts - s)
+                if p_b is not None:
+                    used_clob = True
+            if p_b is not None:
+                ctx[f"price_{s}s_before"] = round(p_b, 6)
+
+            p_a = _next_tape_price(tape, ts + s, exclude_self_ts=ts) if tape else None
+            if p_a is not None:
+                used_tape = True
+            elif history:
+                p_a = _bisect_price(history, ts + s)
+                if p_a is not None:
+                    used_clob = True
+            if p_a is not None:
+                ctx[f"price_{s}s_after"] = round(p_a, 6)
+
+        # ── 主 before/after 字段（保留向后兼容，tape 优先） ─────────
+        p_before = (
+            _bisect_tape(tape, ts - 1, exclude_self_ts=ts) if tape else None
+        )
+        if p_before is None and history:
+            p_before = _bisect_price(history, ts - 1)
         if p_before is not None:
             ctx["market_price_before_trade"] = round(p_before, 6)
+
+        p_after = (
+            _next_tape_price(tape, ts + 1, exclude_self_ts=ts) if tape else None
+        )
+        if p_after is None and history:
+            p_after = _bisect_price(history, ts + 60)
         if p_after is not None:
             ctx["market_price_after_trade"] = round(p_after, 6)
 
-        for label, delta in [
-            ("price_change_5m", 300),
-            ("price_change_15m", 900),
-            ("price_change_1h", 3600),
-        ]:
-            p_prev = _bisect_price(history, ts - delta)
-            p_now = _bisect_price(history, ts)
-            if p_prev and p_now and p_prev > 1e-9:
-                ctx[label] = round((p_now - p_prev) / p_prev, 6)
+        if used_tape and used_clob:
+            ctx["price_source"] = "tape+clob"
+        elif used_tape:
+            ctx["price_source"] = "tape"
+        elif used_clob:
+            ctx["price_source"] = "clob"
 
-        prices_24h = _prices_in_range(history, ts - 86400, ts)
-        if prices_24h:
-            ctx["intraday_high_before_trade"] = round(max(prices_24h), 6)
-            ctx["intraday_low_before_trade"] = round(min(prices_24h), 6)
-            if p_before is not None:
-                below = sum(1 for p in prices_24h if p <= p_before)
-                ctx["price_percentile_in_last_24h"] = round(
-                    below / max(1, len(prices_24h)), 4
-                )
+        # ── 长跨度涨跌幅 / 24h 百分位（tape 通常不够，用 CLOB） ────
+        if history:
+            for label, delta in [
+                ("price_change_5m", 300),
+                ("price_change_15m", 900),
+                ("price_change_1h", 3600),
+            ]:
+                p_prev = _bisect_price(history, ts - delta)
+                p_now = _bisect_price(history, ts)
+                if p_prev and p_now and p_prev > 1e-9:
+                    ctx[label] = round((p_now - p_prev) / p_prev, 6)
+
+            prices_24h = _prices_in_range(history, ts - 86400, ts)
+            if prices_24h:
+                ctx["intraday_high_before_trade"] = round(max(prices_24h), 6)
+                ctx["intraday_low_before_trade"] = round(min(prices_24h), 6)
+                if p_before is not None:
+                    below = sum(1 for p in prices_24h if p <= p_before)
+                    ctx["price_percentile_in_last_24h"] = round(
+                        below / max(1, len(prices_24h)), 4
+                    )
 
     return trade_details
 
@@ -1260,6 +1473,7 @@ def _process_position_group(
     market_info: dict,
     session: requests.Session,
     wallet: str = "",
+    user_market_records: Optional[list[dict]] = None,
 ) -> dict:
     """处理一个 (conditionId|outcome) 分组，返回完整持仓分析对象。"""
     cid_part, outcome_part = key.split("|", 1)
@@ -1362,7 +1576,11 @@ def _process_position_group(
     print(f"  {len(details)} 笔交易已处理")
 
     # Step 5
-    enrich_market_context(details, session, token_id)
+    enrich_market_context(
+        details, session, token_id,
+        condition_id=cid_part, outcome=outcome_part,
+        user_market_records=user_market_records,
+    )
 
     # Step 6 (summary)
     summary = build_position_summary(details, mi, max_pos, max_cap)
@@ -1427,7 +1645,9 @@ def main() -> None:
         safe = "".join(
             c if c.isalnum() or c in "-_" else "_" for c in position_name
         )[:50]
-        output_path = f"position_analysis_{safe}.json"
+        out_dir = Path("analysis_output")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(out_dir / f"position_analysis_{safe}.json")
 
     print("=" * 70)
     print("  Polymarket 持仓深度分析")
@@ -1515,9 +1735,21 @@ def main() -> None:
                         print(f"  ✓ 通过 conditionId 补全市场信息: {market_info['market_question'][:50]}")
                         break
 
+    # ── 收集每个 conditionId 的所有用户成交（供 enrich_market_context
+    #    用对手侧反推填补价格盲区）─────────────────────────────────
+    records_by_cid: dict[str, list[dict]] = {}
+    for r in records:
+        cid = r.get("conditionId", "")
+        if cid:
+            records_by_cid.setdefault(cid, []).append(r)
+
     # ── Step 4-6: 处理每个持仓 ────────────────────────────────────────
     positions = [
-        _process_position_group(key, trades, market_info, session, wallet=wallet)
+        _process_position_group(
+            key, trades, market_info, session,
+            wallet=wallet,
+            user_market_records=records_by_cid.get(key.split("|", 1)[0], []),
+        )
         for key, trades in groups.items()
     ]
 

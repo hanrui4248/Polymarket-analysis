@@ -22,7 +22,14 @@ position_analysis_*.json
 closed_positions_*.json
 market_activity_*
 
+# 分析输出目录
+analysis_output/
+crypto_price/
+
 # 本地调试、临时文件
 *.log
 *.tmp
 .cache/
+
+
+
