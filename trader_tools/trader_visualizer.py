@@ -15,7 +15,7 @@ Polymarket 交易者行为可视化（交互式 HTML）
     pip install plotly
 
 用法:
-    python trader_visualizer.py xxx.json              # 输出 xxx.html
+    python trader_tools/trader_visualizer.py xxx.json              # 输出 xxx.html
     python trader_visualizer.py xxx.json -o chart.html
 """
 
@@ -173,7 +173,143 @@ def visualize(json_path: str, output: str | None = None) -> None:
             legendrank=2,
         ))
 
-    # ── 3. 合并：紫色加粗虚线 + 顶端钻石标记（含 hover）────────
+    # ── 3. 卖出点（含详细 hover） ────────────────────────────────
+    for p in positions:
+        oc = p["market_info"]["outcome_name"]
+        sells = [t for t in p["trades"] if t["action_type"] == "sell"]
+        if not sells:
+            continue
+
+        sizes = [max(6, min(28, s["shares"] ** 0.5 + 4)) for s in sells]
+        rows = []
+        for s in sells:
+            rows.append([
+                s["shares"],
+                s["amount_usdc"],
+                s["realized_pnl_from_this_trade"],
+                s["cumulative_realized_pnl"],
+                s["remaining_position_after_trade"],
+            ])
+
+        fig.add_trace(go.Scatter(
+            x=[_to_dt(s["timestamp"]) for s in sells],
+            y=[s["price"] for s in sells],
+            mode="markers",
+            name=f"卖出 {oc} ({len(sells)} 笔)",
+            marker=dict(
+                symbol="triangle-down",
+                size=sizes,
+                color=COLOR.get(oc, "gray"),
+                line=dict(width=1.2, color="black"),
+                opacity=0.85,
+            ),
+            customdata=rows,
+            hovertemplate=(
+                f"<b>卖出 {oc}</b><br>"
+                "时间: %{x|%H:%M:%S}<br>"
+                "成交价: $%{y:.4f}<br>"
+                "本笔股数: %{customdata[0]:.2f}<br>"
+                "本笔金额: $%{customdata[1]:.2f}<br>"
+                "─────────<br>"
+                "本笔盈亏: $%{customdata[2]:.2f}<br>"
+                "累计盈亏: $%{customdata[3]:.2f}<br>"
+                "剩余持仓: %{customdata[4]:.2f}"
+                "<extra></extra>"
+            ),
+            legendrank=3,
+        ))
+
+    # ── 4. 拆分点 ─────────────────────────────────────────────────
+    for p in positions:
+        oc = p["market_info"]["outcome_name"]
+        splits = [t for t in p["trades"] if t["action_type"] == "split"]
+        if not splits:
+            continue
+
+        rows = []
+        for s in splits:
+            rows.append([
+                s["shares"],
+                s["amount_usdc"],
+                s["remaining_position_after_trade"],
+                s["avg_entry_price_after_trade"],
+            ])
+
+        fig.add_trace(go.Scatter(
+            x=[_to_dt(s["timestamp"]) for s in splits],
+            y=[s["price"] for s in splits],
+            mode="markers",
+            name=f"拆分 {oc} ({len(splits)} 笔)",
+            marker=dict(
+                symbol="square",
+                size=[max(8, min(28, s["shares"] ** 0.5 + 4)) for s in splits],
+                color="#7f8c8d",
+                line=dict(width=0.8, color="white"),
+                opacity=0.8,
+            ),
+            customdata=rows,
+            hovertemplate=(
+                f"<b>拆分 (Split) {oc}</b><br>"
+                "时间: %{x|%H:%M:%S}<br>"
+                "拆分价: $%{y:.4f}<br>"
+                "拆分股数: %{customdata[0]:.2f}<br>"
+                "花费 USDC: $%{customdata[1]:.2f}<br>"
+                "─────────<br>"
+                "拆分后持仓: %{customdata[2]:.2f}<br>"
+                "持仓均价: $%{customdata[3]:.4f}"
+                "<extra></extra>"
+            ),
+            legendrank=4,
+        ))
+
+    # ── 5. 赎回点 ──────────────────────────────────────────────────
+    for p in positions:
+        oc = p["market_info"]["outcome_name"]
+        redeems = [t for t in p["trades"]
+                   if t["action_type"] == "redeem" and t["shares"] > 0.01]
+        if not redeems:
+            continue
+
+        rows = []
+        redeem_y = []
+        for r in redeems:
+            eff_price = r["amount_usdc"] / r["shares"] if r["shares"] > 0.01 else 0
+            redeem_y.append(eff_price)
+            rows.append([
+                r["shares"],
+                r["amount_usdc"],
+                r["realized_pnl_from_this_trade"],
+                r["cumulative_realized_pnl"],
+            ])
+
+        fig.add_trace(go.Scatter(
+            x=[_to_dt(r["timestamp"]) for r in redeems],
+            y=redeem_y,
+            mode="markers",
+            name=f"赎回 {oc} ({len(redeems)} 笔)",
+            marker=dict(
+                symbol="star",
+                size=[max(10, min(30, r["shares"] ** 0.5 + 6)) for r in redeems],
+                color="#f39c12",
+                line=dict(width=0.8, color="white"),
+                opacity=0.9,
+            ),
+            customdata=rows,
+            hovertemplate=(
+                f"<b>赎回 (Redeem) {oc}</b><br>"
+                "时间: %{x|%H:%M:%S}<br>"
+                "赎回价: $%{y:.4f}<br>"
+                "赎回股数: %{customdata[0]:.2f}<br>"
+                "收到 USDC: $%{customdata[1]:.2f}<br>"
+                "─────────<br>"
+                "本笔盈亏: $%{customdata[2]:.2f}<br>"
+                "累计盈亏: $%{customdata[3]:.2f}"
+                "<extra></extra>"
+            ),
+            legendrank=5,
+        ))
+
+    # ── 6. 合并：紫色加粗虚线 + 顶端钻石标记（含 hover）────────
     if merges:
         for m in merges:
             fig.add_vline(
@@ -234,10 +370,10 @@ def visualize(json_path: str, output: str | None = None) -> None:
                 "全部合并总股数: %{customdata[5]:.2f}"
                 "<extra></extra>"
             ),
-            legendrank=3,
+            legendrank=6,
         ))
 
-    # ── 4. 整体布局 ───────────────────────────────────────────────
+    # ── 7. 整体布局 ───────────────────────────────────────────────
     title = positions[0]["market_info"].get("market_question", "")
     wallet = (data.get("meta") or {}).get("wallet_address", "")
     if wallet:
@@ -264,7 +400,7 @@ def visualize(json_path: str, output: str | None = None) -> None:
     )
 
     if output is None:
-        out_dir = Path("analysis_output")
+        out_dir = Path(__file__).resolve().parent.parent / "data" / "analysis_output"
         out_dir.mkdir(parents=True, exist_ok=True)
         output = str(out_dir / Path(json_path).with_suffix(".html").name)
     fig.write_html(output, include_plotlyjs="cdn")

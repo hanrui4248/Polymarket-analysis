@@ -546,6 +546,18 @@ def filter_position_trades(
         for tid, oc in asset_to_outcome.items():
             print(f"    {tid[:30]}… → {oc}")
 
+    # ── 构建 winner 映射（用于 orphan redeem 归属判断） ────────────
+    winner_outcomes: dict[str, str] = {}
+    if tokens_map:
+        for _cid, tokens in tokens_map.items():
+            for tk in tokens:
+                if isinstance(tk, dict) and tk.get("winner"):
+                    w_oc = (tk.get("outcome") or "").strip()
+                    if w_oc:
+                        winner_outcomes[_cid] = w_oc
+    if winner_outcomes:
+        print(f"  winner 映射: {winner_outcomes}")
+
     def _resolve_outcome(r: dict) -> str:
         """获取记录的有效 outcome：先看原始字段，再查 asset 映射"""
         o = r.get("outcome", "")
@@ -613,6 +625,22 @@ def filter_position_trades(
             if fallback_count:
                 print(f"  ⚠ {fallback_count} 条记录无法确定 outcome，回退到 primary={primary}")
 
+    # ── 补全仅有 Split/Redeem 而无订单簿交易的 outcome 分组 ────────
+    # 场景：Split 建仓后某侧从未在订单簿交易（如只持有 Down 等结算）
+    if tokens_map and bilateral_records:
+        bilateral_cids = {r.get("conditionId", "") for r in bilateral_records}
+        for cid_key, tkns in tokens_map.items():
+            if cid_key not in bilateral_cids:
+                continue
+            for tk in tkns:
+                if isinstance(tk, dict):
+                    tk_oc = (tk.get("outcome") or "").strip()
+                    if tk_oc:
+                        gkey = f"{cid_key}|{tk_oc}"
+                        if gkey not in groups:
+                            groups[gkey] = []
+                            print(f"  ✓ 补全 {tk_oc} 分组（仅有 Split/Redeem，无订单簿交易）")
+
     # ── 将 MERGE/SPLIT 复制到同 conditionId 的每个 outcome 组 ────────
     # MERGE 消耗等量的每侧代币返还 USDC, SPLIT 反之。
     # 每侧的 USDC 份额 = 总 usdcSize / outcome 数。
@@ -668,9 +696,15 @@ def filter_position_trades(
                     remaining -= rsize
             remaining_per_group[gkey] = max(0.0, remaining)
 
+        eff_redeem_price = redeem_usdc / redeem_size if redeem_size > 0.01 else 0
         best_match = min(
             matching_keys,
-            key=lambda k: abs(remaining_per_group[k] - redeem_size),
+            key=lambda k: (
+                abs(remaining_per_group[k] - redeem_size),
+                0 if (eff_redeem_price > 0.5
+                      and k.endswith(f"|{winner_outcomes.get(cid, '')}"))
+                else 1,
+            ),
         )
         groups[best_match].append(r)
         _, oname = best_match.split("|", 1)
@@ -1634,6 +1668,7 @@ def main() -> None:
     parser.add_argument("-p", "--position", required=True, help="持仓/市场名称关键词")
     parser.add_argument("-s", "--start-date", default="", help="起始日期 YYYY-MM-DD（可选）")
     parser.add_argument("-o", "--output", default="", help="输出 JSON 路径（可选）")
+    parser.add_argument("--no-html", action="store_true", help="跳过 HTML 可视化生成")
 
     args = parser.parse_args()
     wallet = args.wallet
@@ -1645,7 +1680,7 @@ def main() -> None:
         safe = "".join(
             c if c.isalnum() or c in "-_" else "_" for c in position_name
         )[:50]
-        out_dir = Path("analysis_output")
+        out_dir = Path(__file__).resolve().parent.parent / "data" / "analysis_output"
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = str(out_dir / f"position_analysis_{safe}.json")
 
@@ -1692,35 +1727,17 @@ def main() -> None:
         if discovered:
             condition_ids = list(discovered)
             print(f"\n  ⚡ 从匹配记录中发现 {len(condition_ids)} 个 conditionId，精确回拉完整数据...")
-            records = fetch_wallet_trades(
-                session, wallet, condition_ids, start_ts=None
-            )
-            tokens_map = market_info.get("_tokens_map", {})
-            groups = filter_position_trades(
-                records, position_name, condition_ids, tokens_map
-            )
-            if not groups:
-                print("\n❌ 精确回拉后未找到匹配记录。")
-                sys.exit(0)
 
-            # 补全 market_info（用 Gamma API 按 conditionId 查询）
-            if market_info.get("market_question") == UNAVAILABLE:
-                for cid in condition_ids:
-                    detail = _lookup_market_by_cid(session, cid)
-                    if detail:
-                        market_info["market_question"] = detail.get(
-                            "question", UNAVAILABLE
-                        )
-                        market_info["market_slug"] = detail.get(
-                            "slug", UNAVAILABLE
-                        )
-                        market_info["market_category"] = detail.get(
-                            "category", UNAVAILABLE
-                        )
+            # 先获取市场信息（含 tokens/winner），再重新过滤
+            for cid in condition_ids:
+                detail = _lookup_market_by_cid(session, cid)
+                if detail:
+                    market_info.setdefault("_tokens_map", {})[cid] = detail.get("tokens", [])
+                    if market_info.get("market_question") == UNAVAILABLE:
+                        market_info["market_question"] = detail.get("question", UNAVAILABLE)
+                        market_info["market_slug"] = detail.get("slug", UNAVAILABLE)
+                        market_info["market_category"] = detail.get("category", UNAVAILABLE)
                         market_info["market_status"] = _resolve_status(detail)
-                        market_info["_tokens_map"][cid] = detail.get(
-                            "tokens", []
-                        )
                         for src, dst in [
                             ("startDate", "market_open_time"),
                             ("endDate", "market_close_time"),
@@ -1733,7 +1750,17 @@ def main() -> None:
                         if res is not None:
                             market_info["resolution_result"] = str(res)
                         print(f"  ✓ 通过 conditionId 补全市场信息: {market_info['market_question'][:50]}")
-                        break
+
+            records = fetch_wallet_trades(
+                session, wallet, condition_ids, start_ts=None
+            )
+            tokens_map = market_info.get("_tokens_map", {})
+            groups = filter_position_trades(
+                records, position_name, condition_ids, tokens_map
+            )
+            if not groups:
+                print("\n❌ 精确回拉后未找到匹配记录。")
+                sys.exit(0)
 
     # ── 收集每个 conditionId 的所有用户成交（供 enrich_market_context
     #    用对手侧反推填补价格盲区）─────────────────────────────────
@@ -1769,6 +1796,20 @@ def main() -> None:
         result["positions"] = positions
 
     export_json(result, output_path)
+
+    # ── HTML 可视化 ───────────────────────────────────────────────────
+    html_path = str(Path(output_path).with_suffix(".html"))
+    if not args.no_html:
+        try:
+            _script_dir = str(Path(__file__).resolve().parent)
+            if _script_dir not in sys.path:
+                sys.path.insert(0, _script_dir)
+            from trader_visualizer import visualize
+            visualize(output_path, html_path)
+        except ImportError:
+            print("  ⚠ 未安装 plotly，跳过 HTML 可视化 (pip install plotly)")
+        except Exception as exc:
+            print(f"  ⚠ HTML 可视化失败: {exc}")
 
     # ── 控制台摘要 ────────────────────────────────────────────────────
     print(f"\n{'=' * 70}")
@@ -1815,7 +1856,9 @@ def main() -> None:
         total_pnl = sum(p['position_summary']['final_realized_pnl'] for p in positions)
         sign_t = "+" if total_pnl >= 0 else ""
         print(f"    {'合计':<8} {total_shares:>10,.2f} 股  ${total_buy:>10,.2f}  PnL: {sign_t}${total_pnl:,.2f}")
-    print(f"\n  输出文件: {output_path}")
+    print(f"\n  JSON: {output_path}")
+    if not args.no_html and Path(html_path).exists():
+        print(f"  HTML: {html_path}")
     print("=" * 70)
 
 

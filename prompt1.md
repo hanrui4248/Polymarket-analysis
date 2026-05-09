@@ -1,0 +1,1 @@
+这是最新的日志文件，帮我看看这个文件里，有哪几场是因为gate=depth_cushion这个门控而退出的，把他们的完整市场名称，比如python binance_price_fetcher.py --position "Bitcoin Up or Down - May 4, 11:10PM-11:15PM ET"发给我，然后再批量的用binance_price_fetcher.py脚本获取这些市场的价格，把脚本输出的json和html存在data/test_log文件夹里

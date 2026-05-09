@@ -16,7 +16,7 @@ Binance 秒级价格抓取脚本
 
 用法：
     # 直接给 Polymarket 的市场名（推荐）
-    python binance_price_fetcher.py --position "Bitcoin Up or Down - April 30, 2:45AM-2:50AM ET"
+    python price_tools/binance_price_fetcher.py --position "Bitcoin Up or Down - May 8, 4:40PM-4:45PM ET"
 
     # 或者显式指定起止时间（ET）
     python binance_price_fetcher.py \\
@@ -422,7 +422,8 @@ def main() -> int:
                    help="解析 --position 时使用的年份（默认今年）")
     p.add_argument("--interval", default="1s",
                    help="K 线间隔，1s/1m/5m 等（默认 1s）")
-    p.add_argument("--output-dir", default="./crypto_price", help="输出目录")
+    _default_out = str(Path(__file__).resolve().parent.parent / "data" / "crypto_price")
+    p.add_argument("--output-dir", default=_default_out, help="输出目录")
     p.add_argument("--prefix", help="文件名前缀，默认根据 symbol+时间生成")
     args = p.parse_args()
 
